@@ -1,0 +1,1241 @@
+---
+title: "Chemicals Classification, a Machine Learninng Approach"
+author: "Farshad Mirzazadeh"
+date: "`r Sys.Date()`"
+output: word_document
+toc: true
+toc_depth: 2
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+::: {style="page-break-after: always;"}
+:::
+
+# Introduction
+
+```{r libraries, include=FALSE}
+# load any required libraries / additional files here
+# Specify the list of packages
+requirements <- c("dplyr", "psych", "assert", "ggplot2" ,"cowplot" , "corrplot", "kableExtra", "performance", "tidyverse", "MASS", "Amelia", "naniar", "ade4","factoextra","assertr", "GPArotation","paran", "gridExtra", "car","flextable", "simputation","rpart", "car", "rpart.plot","randomForest", "class", "caret","e1071", "ade4", "RColorBrewer")
+
+# Check if each package is installed
+for (package in requirements) {
+  if (!requireNamespace(package, quietly = TRUE)) {
+    # If not installed, install the package
+    install.packages(package)
+  }
+  
+  # Load the package
+  library(package, character.only = TRUE)
+}
+
+```
+
+In this report, my objective is to assist your company in enhancing the chemical classification process by leveraging the most accurate algorithm. Through a thorough examination of your dataset, I aim to determine if it's feasible to maintain the same level of out-of-sample classification performance using only a subset of the variables. This could potentially streamline your processes and increase efficiency without compromising the quality of the classification.
+
+The report is structured as follows:
+
+1.  **Addressing Missing Data and Outliers:** The initial step in my analysis will involve inspecting the dataset for missing values and potential outliers.I will address these appropriately as they can significantly influence the quality of our data and the subsequent reliability of our analysis and modeling.
+
+2.  **Exploratory Data Analysis (EDA):** Post data cleaning, I will embark on an in-depth exploratory analysis. This process leverages descriptive statistics to understand key features, and the overall structure of our dataset. Think of EDA as a first glance that guides us in forming pertinent hypotheses and building robust models.
+
+3.  **Data Splitting:** Once I have a solid understanding of our data, I will partition it into training, testing, and validation subsets. This step ensures that we can evaluate our models effectively and confirms their ability to generalize to new, unseen data.
+
+4.  **Model Building and Selection:** I will then apply a range of classification techniques to our training dataset. I will pick the model that excels on the testing dataset, aiming for a balance between learning proficiency and the capacity to generalize to new information.
+
+5.  **Performance Evaluation:** Finally, I will assess the selected model's performance using the validation dataset. This crucial step offers us a reliable estimate of how our model will perform in real-world scenarios.
+
+By the end of this report, I will provide a recommendation on the optimal classification approach for this dataset, and illustrate why it's the best choice for your company.
+
+# Explaratory Data Analysis
+
+```{r data, include=FALSE}
+# load the dataset here
+# [Data set number: 23004381]
+
+# Ask for the student ID
+student_id <- 23004381
+
+# Construct the data location string based on the student ID
+data_location <- paste0("../data/", student_id, ".csv")
+
+# Read the data from the CSV file
+
+data <- read.csv(data_location)
+
+```
+
+## Summary Stats
+
+The dataset we are working with contains `r nrow(data)` observations spread across `r ncol(data)` variables. The variable of interest, `V21`, is categorical and has `r length(unique(data$V21))` unique classes. Understanding the structure of our data is the first step towards building effective classification models.
+
+```{r desc, echo=FALSE, results='asis'}
+
+desc <- describe(data[,-21])
+
+# Remove unwanted columns
+desc <- desc[, !(colnames(desc) %in% c("trimmed", "mad", "skew", "se","kurtosis"))]
+  
+# Round numbers to 4 decimal places
+desc <- round(desc, 4)
+
+# Convert to flextable
+desc_ft <- flextable(desc)
+
+# Apply theme and set caption
+desc_ft <- desc_ft |> theme_booktabs(bold_header = TRUE) |> set_caption(caption = "Summary Stats")
+
+# Print the flextable
+print(desc_ft)
+
+
+# Convert the summary to a flextable
+
+
+
+
+```
+
+## Missing Values
+
+In this section, I display the count of missing values for each variable. For a more granular understanding, please refer to the appendix, where we have provided detailed plots of missing data, segregated by class, for every individual variable.
+
+Our initial analysis identified `r sum(is.na(data))` missing values in our dataset. The existence of missing values can influence the performance of our classification models. Therefore, understanding the nature of these missing values is crucial.
+
+
+```{r missing, echo=FALSE}
+gg_miss_var(data)
+
+MissingV <- data %>%
+  group_by(V21) %>%
+  miss_var_summary() %>%
+  mutate(pct_miss = round(pct_miss, 2))
+flextable(MissingV[MissingV$n_miss>0,])
+
+```
+
+I will be investigating the pattern of missingness to discern whether it is Missing Completely At Random (MCAR). If the data is MCAR, the missingness has no relationship with any other data variable. In other words, the likelihood of an instance (row) having a missing value does not depend on either the known values or the missing data. Understanding this will help us decide how best to handle these missing values.
+
+
+```{r mcart, echo=FALSE}
+mcar_result <- mcar_test(data)
+mcar_result$p.value <- signif(mcar_result$p.value)
+flextable(mcar_result)
+```
+
+The results from the `mcar_test` function reveal a p-value of `r signif(mcar_result$p.value, digits = 3)`, which is statistically significant at the 0.05 level. This indicates that the missing data in our dataset is not missing completely at random (MCAR). In other words, the missingness depends on the observed and/or unobserved data.
+
+When data is not MCAR, the missingness mechanism needs to be taken into account during the imputation process. Ignoring the mechanism could lead to biased estimates and incorrect inferences.
+
+Therefore, to handle missing data in our dataset, we will employ multiple imputation, specifically using the Amelia package in R. Multiple imputation is a stochastic imputation method that fills in the missing values multiple times to generate complete datasets. It accounts for the uncertainty around the missing values by creating several different plausible imputed datasets and appropriately combines results obtained from each of them.
+
+This way, I can proceed with my analysis while minimizing the bias introduced by missing data. The Amelia package is an effective tool that can handle missing data mechanisms beyond MCAR, making it suitable for our dataset.
+
+## Checking for outliers
+
+```{r outliers , echo=FALSE}
+maha_dist(data) %>% hist(main="", xlab="")
+# Select only numeric columns and exclude rows with NA values
+data_numeric <- data[sapply(data, is.numeric)]
+data_numeric <- na.omit(data_numeric)
+
+# Calculate Mahalanobis distance
+data_maha <- mahalanobis(data_numeric, colMeans(data_numeric), cov(data_numeric))
+
+# Calculate the median and MAD of the distances
+med <- median(data_maha)
+mad <- mad(data_maha)
+
+# Find rows where Mahalanobis distance is more than 3 MADs from median
+outliers <- which(abs(data_maha - med) > 3 * mad)
+n_outliers <- length(outliers)
+```
+
+In the process of detecting outliers, I faced an obstacle with missing values. As the method we utilized for outlier detection is sensitive to missing values, I were required to remove these cases before proceeding. This should be taken into account when considering the results, as it means we performed our outlier detection on a subset of the full data.
+
+Once the missing values were removed, we identified `r n_outliers` outliers within the dataset. However, it's worth noting that when we initially applied our outlier detection technique without handling the missing values, we were able to identify 43 potential outliers.
+
+This discrepancy suggests that the presence of missing values could be affecting the identification of outliers, and it highlights the importance of careful and thorough data cleaning before proceeding with further analyses.
+
+## Features Distribution
+
+In the following chart, I present box plots for the 20 variables, excluding missing values. A notable discrepancy is apparent among the means of the variables. A handful of variables are concentrated below 1, while others range from 7 to 15. For a more detailed view of these variables, please refer to the violin plots provided in the appendix.
+
+```{r boxplot, echo=FALSE, warning=FALSE}
+# Extract column names
+column_names <- colnames(data)[1:20]
+
+
+# Melt the data for plotting
+data_plot <- data[, column_names]
+data_long <- reshape2::melt(data_plot, id.vars = NULL)
+
+# Create the violin plot
+ggplot(data_long, aes(x = variable, y = value)) +
+  geom_boxplot(fill = "skyblue") +
+  geom_boxplot(width=0.1, fill="white") +
+  coord_flip() +
+  theme_light() +
+  labs(x = "Variable", y = "Value") +
+  ggtitle("Distribution via Box-Plot")
+
+```
+
+
+
+
+# Predictive Models
+
+## Methodology
+
+To construct the predictive models, I first divided the dataset into training, testing, and validation subsets. The size of each subset is provided below.
+
+
+```{r subsetting, echo=FALSE}
+Nf <- nrow(data)
+Ntraining <- round(Nf * .5)
+NValid <- ceiling(Nf*.25)
+Ntest <- Nf - (Ntraining +NValid)
+
+set.seed(155)
+Split <- sample(c(rep("Train",Ntraining), rep("Test",Ntest), rep("Validation", NValid)), Nf, replace = FALSE)
+
+
+#table(Split)
+
+split_df <- as.data.frame(table(Split))
+names(split_df) <- c("Split", "Count")  # rename the columns
+
+
+# Create a flextable
+flextable(split_df)
+
+
+```
+
+```{r subsetting_lab, echo=FALSE}
+training <- data[Split=="Train",]
+test <- data[Split=="Test",]
+validation <- data[Split=="Validation",]
+```
+
+
+In order to prevent information leakage between these subsets, I conducted missing value imputation separately for each set. This ensures that the imputation process does not inadvertently use information from the other subsets, thereby maintaining the integrity and independence of the training, testing, and validation sets.
+
+
+```{r imputation, echo=FALSE}
+# Use Amelia to impute missing values in the training set
+sink("/dev/null")
+imp_train <- amelia(training[,1:20], m = 5) # Exclude categorical column V21
+sink()
+
+# Use Amelia to impute missing values in the testing set
+sink("/dev/null")
+imp_test <- amelia(test[,1:20], m = 5) # Exclude categorical column V21
+sink()
+
+# Use Amelia to impute missing values in the validation set
+sink("/dev/null")
+imp_valid <- amelia(validation[,1:20], m = 5) # Exclude categorical column V21
+sink()
+
+
+```
+
+```{r corrplot, echo=FALSE}
+
+# Compute the correlation matrix for the imputed training set
+
+imp_train_1 <- imp_train$imputations[[1]]
+
+# Compute the correlation matrix for the numeric variables
+cor_data_imp <- cor(imp_train_1[,1:20]) 
+
+#corrplot(cor_data_no_na, method = "circle", main = "Correlation Plot - Original Data")
+corrplot(cor_data_imp, method = "circle", main = "Correlation Plot - Imputed Data")
+
+
+scree(imp_train_1)
+```
+The correlation plot reveals a substantial correlation among several variables, suggesting that dimension reduction could potentially enhance our predictive analysis. The scree plot further corroborates this perspective by indicating the existence of five components with eigenvalues exceeding one. These observations suggest that implementing dimension reduction techniques might be beneficial in my analytical process.
+
+
+```{r subsets, echo=FALSE}
+# Add V21 back to each imputed dataset
+imp_train$imputations <- lapply(imp_train$imputations, function(data) {
+  data$V21 <- training$V21
+  return(data)
+})
+
+
+imp_test$imputations <- lapply(imp_test$imputations, function(data) {
+  data$V21 <- test$V21
+  return(data)
+})
+
+imp_valid$imputations <- lapply(imp_valid$imputations, function(data) {
+  data$V21 <- validation$V21
+  return(data)
+})
+
+```
+
+
+Having executed parallel analysis for each set of imputed data to determine the optimal number of principal components, it has become apparent that all sets encompass five principal components. Therefore, I will employ these five components in the PCA dimension reduction model.
+
+
+```{r paran, echo=FALSE}
+# Initialize a data frame to store the results
+result_df <- data.frame(Imputation = integer(), Components = integer())
+
+# Loop through each imputed data set
+for (i in 1:5) {
+  # Get the current imputed data set
+  selected_data <- imp_train$imputations[[i]][, 1:20]
+  
+  # Perform parallel analysis
+  ParallelAnalysis <- paran(selected_data, iterations=5000, centile=95)
+  
+  # Store the result
+  result_df <- rbind(result_df, data.frame(Imputation = i, Components = ParallelAnalysis$Retained))
+}
+
+# Convert the result to a flextable
+result_table <- flextable(result_df)
+
+# Set table properties
+result_table <- set_caption(result_table, "Parallel Analysis Results")
+result_table <- theme_booktabs(result_table, part = "all")
+
+# Print the table
+print(result_table)
+
+```
+
+
+
+```{r dim_reduc, echo=FALSE}
+
+train_pca_list <- list()
+test_pca_list <- list()
+
+# Number of imputations
+num_imputations <- length(imp_train$imputations)
+
+# Apply PCA on each imputation set
+for (i in 1:num_imputations) {
+  # Perform PCA on the training data
+  train_pca <- prcomp(imp_train$imputations[[i]][, -21], center = TRUE, scale. = TRUE)
+  
+  # Get the principal components and add the result to the list
+  train_pca_list[[i]] <- as.data.frame(train_pca$x[, 1:5])
+  train_pca_list[[i]]$V21 <- imp_train$imputations[[i]]$V21
+  
+  # Project the test data onto the PCs
+  test_pca <- predict(train_pca, newdata = imp_test$imputations[[i]][, -21])
+  
+  # Get the principal components and add the result to the list
+  test_pca_list[[i]] <- as.data.frame(test_pca[, 1:5])
+  test_pca_list[[i]]$V21 <- imp_test$imputations[[i]]$V21
+}
+
+```
+
+
+## Decision Tree
+
+A decision tree model is like a flowchart for making decisions. It consists of branches, nodes, and leaves. At each node, a decision is made based on a feature, and depending on the outcome, we follow the appropriate branch to the next node, and so on. This continues until we reach a leaf, which gives us the final decision or classification.
+
+
+```{r dt_plot, echo=FALSE}
+# Fit the model on training data
+dt_model <- rpart(V21 ~ ., data = imp_train$imputations[[1]], method = "class")
+rpart.plot(dt_model, extra = 106)
+
+
+```
+
+```{r DeciTree, echo=FALSE}
+
+dt_accuracy_df <- data.frame(Imputation = numeric(),
+                          Accuracy = numeric(),
+                          stringsAsFactors = FALSE)
+
+# For each of the 5 imputed datasets
+for (i in 1:5) {
+  # Train the decision tree model
+  dt_model <- rpart(V21 ~ ., data = imp_train$imputations[[i]], method = "class")
+  
+  # Make predictions
+  predictions <- predict(dt_model, newdata = imp_test$imputations[[i]], type = "class")
+  
+  # Create a confusion matrix
+  cm <- table(imp_test$imputations[[i]]$V21, predictions)
+  
+  # Calculate accuracy
+  accuracy <- sum(diag(cm)) / sum(cm)
+  
+  # Store the accuracy in the accuracy data frame
+  dt_accuracy_df <- rbind(dt_accuracy_df, data.frame(Imputation = i, Accuracy = accuracy))
+}
+
+# Print the mean accuracy across all 5 imputations
+mean_accuracy <- mean(dt_accuracy_df$Accuracy)
+dt_accuracy_df <- rbind(dt_accuracy_df, data.frame(Imputation = "Mean", Accuracy = mean_accuracy))
+
+# Create a flextable
+dt_accuracy_ft <- flextable(dt_accuracy_df)
+
+# Print the flextable
+print(dt_accuracy_ft)
+
+
+```
+
+The average accuracy performance for the Decision Tree model is `r mean_accuracy`.
+
+
+
+## Random Forest
+
+Random Forests is essentially a collection of many decision trees - hence the 'forest'. Each tree in the forest is slightly different, and they each make their own predictions. The final prediction of the Random Forest model is determined by combining the predictions of all the trees, typically by taking the majority vote. This method tends to be more robust and accurate than a single decision tree because it mitigates the risk of overfitting to the training data.
+
+```{r randomfor, echo=FALSE}
+# Set up training control
+ctrl <- trainControl(method = "cv", number = 5)
+
+# Set up the grid of tuning parameters
+grid <- expand.grid(mtry = seq(1, 10, by = 1), 
+                    splitrule = c("gini", "extratrees"),
+                    min.node.size = seq(1, 10, by = 1))
+
+# Create empty vectors to hold the tuning parameters and accuracy for each imputation
+mtry_values <- c()
+splitrule_values <- c()
+min_node_size_values <- c()
+accuracy_values <- c()
+
+# Loop over each imputation
+for (i in 1:5){
+  # Get the i-th imputation
+  imp_train_i <- as.data.frame(imp_train$imputations[[i]])
+  imp_test_i <- as.data.frame(imp_test$imputations[[i]])
+
+  # Make sure the target variable is a factor
+  imp_train_i$V21 <- as.factor(imp_train_i$V21)
+  imp_test_i$V21 <- as.factor(imp_test_i$V21)
+  
+  # Perform grid search
+  rf_grid <- train(V21 ~ ., data = imp_train_i, method = "ranger", 
+                   trControl = ctrl, tuneGrid = grid)
+  
+  # Get best model
+  best_rf_model <- rf_grid$finalModel
+  
+  # Predict on the test set
+  preds <- predict(best_rf_model, data = imp_test_i)$predictions
+  
+  # Compute accuracy
+  acc <- sum(preds == imp_test_i$V21) / nrow(imp_test_i)
+  accuracy_values <- c(accuracy_values, acc)
+
+  # Save the best parameters
+  mtry_values <- c(mtry_values, rf_grid$bestTune$mtry)
+  splitrule_values <- c(splitrule_values, rf_grid$bestTune$splitrule)
+  min_node_size_values <- c(min_node_size_values, rf_grid$bestTune$min.node.size)
+}
+
+# Compute average accuracy
+rf_avg_accuracy <- round(mean(accuracy_values), 2)
+
+# Create a data frame with the results
+results_df <- data.frame(
+  Imputation = c(1:5, "Average"),
+  Mtry = c(mtry_values, NA),
+  Splitrule = c(splitrule_values, NA),
+  Min.Node.Size = c(min_node_size_values, NA),
+  Accuracy = c(accuracy_values, rf_avg_accuracy),
+  stringsAsFactors = FALSE
+)
+
+# Create the flextable
+results_table <- flextable(results_df)
+results_table <- set_caption(results_table, caption = "Random Forest Results")
+# Print the table
+print(results_table)
+
+```
+
+The average accuracy performance for the Random Forest algorithm is `r rf_avg_accuracy`.
+
+Given that Decision Tree and Random Forest models fully exploit the entire dataset, I did not apply PCA for these models. However, for the subsequent models, I incorporated PCA-reduced datasets into the analyses to measure their performance as well.
+
+
+## K-NN
+
+k-NN is a simple yet powerful algorithm. Given a new, unseen observation, k-NN finds the 'k' training examples that are closest to the new observation, according to some distance measure. The new observation is then assigned the most common class among these 'k' nearest neighbors.
+
+
+```{r knn, echo=FALSE}
+
+# Initialize an empty list to store the accuracy for each value of k
+knn_accuracy_list <- list()
+
+# Create an empty dataframe to store the results for each imputation
+knn_results_df <- data.frame(Imputation = integer(),
+                             Optimal_K = integer(),
+                             Accuracy = numeric(),
+                             stringsAsFactors = FALSE)
+
+# Loop over each imputation
+for (i in 1:5) {
+  # Extract the training data
+  knn_train <- imp_train$imputations[[i]][, -21] 
+  # Extract the test data
+  knn_test <- imp_test$imputations[[i]][, -21] 
+  # Extract the class labels for the training data
+  classTrain <- imp_train$imputations[[i]]$V21
+  # Calculate the square root of the number of rows
+  knn_max_k <- round(sqrt(nrow(imp_train$imputations[[i]])))
+  # Initialize a vector to store the accuracy for each value of k
+  knn_accuracy_vector <- numeric(knn_max_k)
+  # Run the k-NN algorithm for different values of k
+  for (k in 1:knn_max_k) {
+    # Perform the k-NN classification
+    knn_result <- knn(train=knn_train, test=knn_test, cl=classTrain, k=k)
+    # Extract the true labels for the test data
+    knn_true_labels <- imp_test$imputations[[i]]$V21
+    # Calculate the accuracy
+    knn_accuracy_vector[k] <- sum(knn_result == knn_true_labels) / length(knn_true_labels)
+  }
+  # Store the accuracy vector in the list
+  knn_accuracy_list[[i]] <- knn_accuracy_vector
+
+  # Determine the optimal number of neighbours
+  knn_optimal_k <- which.max(knn_accuracy_vector)
+  
+  # Append optimal_k and accuracy to the results dataframe
+  knn_results_df <- rbind(knn_results_df, data.frame(Imputation = i, 
+                                                     Optimal_K = knn_optimal_k, 
+                                                     Accuracy = knn_accuracy_vector[knn_optimal_k],
+                                                     stringsAsFactors = FALSE))
+
+}
+
+# Compute and append average accuracy to the dataframe
+knn_avg_accuracy <- round(mean(knn_results_df$Accuracy), 2)
+knn_results_df <- rbind(knn_results_df, data.frame(Imputation = "Average", 
+                                                   Optimal_K = NA, 
+                                                   Accuracy = knn_avg_accuracy,
+                                                   stringsAsFactors = FALSE))
+
+# Create a flextable with the results
+knn_results_table <- flextable(knn_results_df)
+knn_results_table <- set_caption(knn_results_table, caption = "Best Result of Each Imputation")
+# Print the table
+#print(knn_results_table)
+
+# Use a different color set
+knn_colorSet <- brewer.pal(5, "Set2")
+
+# Initialize the plot
+k_values <- 1:length(knn_accuracy_list[[1]])
+plot(k_values, knn_accuracy_list[[1]], type = "n",  # "n" initializes an empty plot
+     main = "Accuracy vs Number of Neighbours",
+     xlab = "Number of Neighbours (k)",
+     ylab = "Accuracy",
+     ylim = c(min(unlist(knn_accuracy_list)), max(unlist(knn_accuracy_list))))
+
+# Draw lines and points in the loop:
+for (i in 1:length(knn_accuracy_list)) {
+  # Draw lines and points with color from colorSet
+  lines(1:length(knn_accuracy_list[[i]]), knn_accuracy_list[[i]], type = "b", col = knn_colorSet[i], pch = 16)
+  points(1:length(knn_accuracy_list[[i]]), knn_accuracy_list[[i]], col = knn_colorSet[i], pch = 16) # Filled points
+  
+  # Find the index of the maximum accuracy
+  max_index <- which.max(knn_accuracy_list[[i]])
+  
+  # Highlight the point of maximum accuracy with same color but with larger size
+  points(max_index, knn_accuracy_list[[i]][max_index], col = knn_colorSet[i], pch = 16, cex = 2) # Filled points
+}
+
+# Add a legend
+legend("bottomright", legend = paste("Imputation", 1:length(knn_accuracy_list)), 
+       col = knn_colorSet, pch = 16)
+
+```
+
+```{r knn_pca, echo=FALSE}
+# Initialize an empty list to store the accuracy for each value of k
+knn_accuracy_list <- list()
+
+# Create an empty dataframe to store the results for each imputation
+knn_results_df_pca <- data.frame(Imputation = integer(),
+                             Optimal_K = integer(),
+                             Accuracy = numeric(),
+                             stringsAsFactors = FALSE)
+
+# Loop over each imputation
+for (i in 1:length(train_pca_list)) {
+  # Extract the PCA-transformed training data
+  knn_train <- train_pca_list[[i]][, -6] 
+  # Extract the PCA-transformed test data
+  knn_test <- test_pca_list[[i]][, -6] 
+  # Extract the class labels for the training data
+  classTrain <- train_pca_list[[i]]$V21
+  # Calculate the square root of the number of rows
+  knn_max_k <- round(sqrt(nrow(knn_train)))
+  # Initialize a vector to store the accuracy for each value of k
+  knn_accuracy_vector <- numeric(knn_max_k)
+  # Run the k-NN algorithm for different values of k
+  for (k in 1:knn_max_k) {
+    # Perform the k-NN classification
+    knn_result <- knn(train=knn_train, test=knn_test, cl=classTrain, k=k)
+    # Extract the true labels for the test data
+    knn_true_labels <- test_pca_list[[i]]$V21
+    # Calculate the accuracy
+    knn_accuracy_vector[k] <- sum(knn_result == knn_true_labels) / length(knn_true_labels)
+  }
+  # Store the accuracy vector in the list
+  knn_accuracy_list[[i]] <- knn_accuracy_vector
+
+  # Determine the optimal number of neighbours
+  knn_optimal_k <- which.max(knn_accuracy_vector)
+  
+  # Append optimal_k and accuracy to the results dataframe
+  knn_results_df_pca <- rbind(knn_results_df_pca, data.frame(Imputation = i, 
+                                                     Optimal_K = knn_optimal_k, 
+                                                     Accuracy = knn_accuracy_vector[knn_optimal_k],
+                                                     stringsAsFactors = FALSE))
+}
+
+# Compute and append average accuracy to the dataframe
+knn_avg_accuracy <- round(mean(knn_results_df_pca$Accuracy), 2)
+knn_results_df_pca <- rbind(knn_results_df_pca, data.frame(Imputation = "Average", 
+                                                   Optimal_K = NA, 
+                                                   Accuracy = knn_avg_accuracy,
+                                                   stringsAsFactors = FALSE))
+
+# Create a flextable with the results
+knn_results_table <- flextable(knn_results_df_pca)
+knn_results_table <- set_caption(knn_results_table, caption = "Best Result of Each Imputation")
+# Print the table
+#print(knn_results_table)
+
+# Use a different color set
+knn_colorSet <- brewer.pal(5, "Set2")
+
+# Initialize the plot
+k_values <- 1:length(knn_accuracy_list[[1]])
+plot(k_values, knn_accuracy_list[[1]], type = "n",  # "n" initializes an empty plot
+     main = "Accuracy vs Number of Neighbours - PCA reduced set",
+     xlab = "Number of Neighbours (k)",
+     ylab = "Accuracy",
+     ylim = c(min(unlist(knn_accuracy_list)), max(unlist(knn_accuracy_list))))
+
+# Draw lines and points in the loop:
+for (i in 1:length(knn_accuracy_list)) {
+  # Draw lines and points with color from colorSet
+  lines(1:length(knn_accuracy_list[[i]]), knn_accuracy_list[[i]], type = "b", col = knn_colorSet[i], pch = 16)
+  points(1:length(knn_accuracy_list[[i]]), knn_accuracy_list[[i]], col = knn_colorSet[i], pch = 16) # Filled points
+  
+  # Find the index of the maximum accuracy
+  max_index <- which.max(knn_accuracy_list[[i]])
+  
+  # Highlight the point of maximum accuracy with same color but with larger size
+  points(max_index, knn_accuracy_list[[i]][max_index], col = knn_colorSet[i], pch = 16, cex = 2) # Filled points
+}
+
+# Add a legend
+legend("bottomright", legend = paste("Imputation", 1:length(knn_accuracy_list)), 
+       col = knn_colorSet, pch = 16)
+
+```
+In the plots, we observe that there is no substantial difference in the optimal number of neighbors for the entire dataset and the PCA-reduced one in the k-nearest neighbors (KNN) algorithm. For both datasets, the optimal value of 'k' appears to range between 21 and 25.
+
+```{r knn_results, echo=FALSE}
+# Add "Method" column to the knn_results_df and knn_results_df_pca
+# Create an empty dataframe to store the results for each imputation
+combined_results_df <- data.frame(
+  Imputation = integer(),
+  Optimal_K_Imputed = integer(),
+  Accuracy_Imputed = numeric(),
+  Optimal_K_PCA = integer(),
+  Accuracy_PCA = numeric(),
+  stringsAsFactors = FALSE
+)
+
+# Loop over each imputation
+for (i in 1:5) {
+  # Use the same steps to get the optimal k and accuracy for imputed data as before
+  knn_optimal_k_imputed <- knn_results_df$Optimal_K[knn_results_df$Imputation == i]
+  knn_accuracy_imputed <- knn_results_df$Accuracy[knn_results_df$Imputation == i]
+
+  # Use the same steps to get the optimal k and accuracy for PCA-reduced data
+  knn_optimal_k_pca <- knn_results_df_pca$Optimal_K[knn_results_df_pca$Imputation == i]
+  knn_accuracy_pca <- knn_results_df_pca$Accuracy[knn_results_df_pca$Imputation == i]
+  
+  # Append results to the dataframe
+  combined_results_df <- rbind(
+    combined_results_df, 
+    data.frame(
+      Imputation = i, 
+      Optimal_K_Imputed = knn_optimal_k_imputed, 
+      Accuracy_Imputed = knn_accuracy_imputed,
+      Optimal_K_PCA = knn_optimal_k_pca, 
+      Accuracy_PCA = knn_accuracy_pca,
+      stringsAsFactors = FALSE
+    )
+  )
+}
+
+# Compute and append average accuracy to the dataframe
+combined_avg_accuracy_imputed <- round(mean(combined_results_df$Accuracy_Imputed), 2)
+combined_avg_accuracy_pca <- round(mean(combined_results_df$Accuracy_PCA), 2)
+
+combined_results_df <- rbind(
+  combined_results_df, 
+  data.frame(
+    Imputation = "Average", 
+    Optimal_K_Imputed = NA, 
+    Accuracy_Imputed = combined_avg_accuracy_imputed,
+    Optimal_K_PCA = NA, 
+    Accuracy_PCA = combined_avg_accuracy_pca,
+    stringsAsFactors = FALSE
+  )
+)
+
+# Create a flextable with the results
+combined_results_table <- flextable(combined_results_df)
+combined_results_table <- set_caption(combined_results_table, caption = "Best Result of Each Method and Imputation")
+# Print the table
+print(combined_results_table)
+
+
+```
+Based on the table, it's clear that the K-Nearest Neighbors (KNN) model performs similarly on both the complete dataset and the PCA-reduced one. On average, both methods achieve an accuracy of approximately 66%. This suggests that reducing the dimensionality of the dataset through PCA does not detrimentally affect the performance of the KNN model in this instance.
+
+
+## Linear Discriminant Analysis
+
+LDA is a method used to find a linear combination of features that characterizes or separates two or more classes. 
+```{r lda, echo=FALSE}
+# Create an empty data frame to store the results for each imputation
+lda_results_df <- data.frame(Imputation = integer(),
+                             Accuracy = numeric(),
+                             stringsAsFactors = FALSE)
+
+for(i in 1:5){
+  # Extract imputed data
+  train_data <- imp_train$imputations[[i]]
+  test_data <- imp_test$imputations[[i]]
+  
+  # Create LDA model
+  lda_model <- lda(V21 ~ ., data = train_data)
+  
+  # Make predictions
+  predictions <- predict(lda_model, newdata = test_data)$class
+  
+  # Calculate accuracy
+  accuracy <- sum(predictions == test_data$V21) / nrow(test_data)
+  
+  # Append imputation number and accuracy to the results dataframe
+  lda_results_df <- rbind(lda_results_df, data.frame(Imputation = i, 
+                                                     Accuracy = accuracy,
+                                                     stringsAsFactors = FALSE))
+}
+
+# Compute and append average accuracy to the dataframe
+lda_avg_accuracy <- round(mean(lda_results_df$Accuracy), 2)
+lda_results_df <- rbind(lda_results_df, data.frame(Imputation = "Average", 
+                                                   Accuracy = lda_avg_accuracy,
+                                                   stringsAsFactors = FALSE))
+
+# Create a flextable with the results
+lda_results_table <- flextable(lda_results_df)
+lda_results_table <- set_caption(lda_results_table, caption = "LDA Accuracy for Each Imputation")
+
+# Print the table
+#print(lda_results_table)
+
+```
+
+```{r lda_pca, echo=FALSE}
+# Create an empty data frame to store the results for each imputation
+# Create an empty data frame to store the results for each imputation
+lda_pca_results_df <- data.frame(Imputation = integer(),
+                                 Accuracy = numeric(),
+                                 stringsAsFactors = FALSE)
+
+for(i in 1:num_imputations){
+  # Extract PCA-reduced imputed data
+  train_data_pca <- train_pca_list[[i]]
+  test_data_pca <- test_pca_list[[i]]
+  
+  # Create LDA model
+  lda_model_pca <- lda(V21 ~ ., data = train_data_pca)
+  
+  # Make predictions
+  predictions_pca <- predict(lda_model_pca, newdata = test_data_pca)$class
+  
+  # Calculate accuracy
+  accuracy_pca <- sum(predictions_pca == test_data_pca$V21) / nrow(test_data_pca)
+  
+  # Append imputation number and accuracy to the results dataframe
+  lda_pca_results_df <- rbind(lda_pca_results_df, data.frame(Imputation = i, 
+                                                             Accuracy = accuracy_pca,
+                                                             stringsAsFactors = FALSE))
+}
+
+# Compute and append average accuracy to the dataframe
+lda_pca_avg_accuracy <- round(mean(lda_pca_results_df$Accuracy), 2)
+lda_pca_results_df <- rbind(lda_pca_results_df, data.frame(Imputation = "Average", 
+                                                           Accuracy = lda_pca_avg_accuracy,
+                                                           stringsAsFactors = FALSE))
+
+# Create a flextable with the results
+lda_pca_results_table <- flextable(lda_pca_results_df)
+lda_pca_results_table <- set_caption(lda_pca_results_table, caption = "LDA Accuracy for Each Imputation (PCA-reduced data)")
+
+# Print the table
+#print(lda_pca_results_table)
+
+
+```
+
+```{r lda_res, echo=FALSE}
+# Create an empty data frame to store the results for each imputation
+results_df <- data.frame(Imputation = integer(),
+                         LDA_Accuracy = numeric(),
+                         PCA_LDA_Accuracy = numeric(),
+                         stringsAsFactors = FALSE)
+
+for(i in 1:5){
+  # Append imputation number and accuracies to the results dataframe
+  results_df <- rbind(results_df, data.frame(Imputation = i, 
+                                             LDA_Accuracy = lda_results_df$Accuracy[i],
+                                             PCA_LDA_Accuracy = lda_pca_results_df$Accuracy[i],
+                                             stringsAsFactors = FALSE))
+}
+
+# Compute and append average accuracy to the dataframe
+lda_avg_accuracy <- round(mean(results_df$LDA_Accuracy), 2)
+pca_lda_avg_accuracy <- round(mean(results_df$PCA_LDA_Accuracy), 2)
+
+results_df <- rbind(results_df, data.frame(Imputation = "Average", 
+                                           LDA_Accuracy = lda_avg_accuracy,
+                                           PCA_LDA_Accuracy = pca_lda_avg_accuracy,
+                                           stringsAsFactors = FALSE))
+
+# Create a flextable with the results
+results_table <- flextable(results_df)
+results_table <- set_caption(results_table, caption = "LDA and PCA-LDA Accuracy for Each Imputation")
+
+# Print the table
+print(results_table)
+
+```
+
+Based on the table provided for the Linear Discriminant Analysis, it appears that dimension reduction has a significant impact on classification accuracy, reducing it by an average of 19%. Specifically, while the model using the complete dataset yielded an average accuracy of 86%, the PCA-reduced data set's performance was noticeably lower.
+
+
+
+
+
+## Quadratic Discriminant Analysis
+
+QDA is very similar to LDA but it can provide a better fit when classes are not linearly separable. While LDA assumes that the distributions of the features for each class have the same covariance matrix, QDA does not make this assumption, and each class has its own covariance matrix. This makes QDA more flexible than LDA, but also means it requires more data to get accurate results.
+
+
+```{r qda, echo=FALSE}
+# Create an empty data frame to store the results for each imputation
+qda_results_df <- data.frame(Imputation = integer(),
+                             Accuracy = numeric(),
+                             stringsAsFactors = FALSE)
+
+for(i in 1:5){
+  # Extract imputed data
+  train_data <- imp_train$imputations[[i]]
+  test_data <- imp_test$imputations[[i]]
+  
+  # Create QDA model
+  qda_model <- qda(V21 ~ ., data = train_data)
+  
+  # Make predictions
+  predictions <- predict(qda_model, newdata = test_data)$class
+  
+  # Calculate accuracy
+  accuracy <- sum(predictions == test_data$V21) / nrow(test_data)
+  
+  # Append imputation number and accuracy to the results dataframe
+  qda_results_df <- rbind(qda_results_df, data.frame(Imputation = i, 
+                                                     Accuracy = accuracy,
+                                                     stringsAsFactors = FALSE))
+}
+
+# Compute and append average accuracy to the dataframe
+qda_avg_accuracy <- round(mean(qda_results_df$Accuracy), 2)
+qda_results_df <- rbind(qda_results_df, data.frame(Imputation = "Average", 
+                                                   Accuracy = qda_avg_accuracy,
+                                                   stringsAsFactors = FALSE))
+
+# Create a flextable with the results
+qda_results_table <- flextable(qda_results_df)
+qda_results_table <- set_caption(qda_results_table, caption = "QDA Accuracy for Each Imputation")
+
+# Print the table
+#print(qda_results_table)
+```
+
+
+```{r qda_pca, echo=FALSE} 
+# Initialize empty data frames to store the results for each imputation
+qda_results_df <- data.frame(Imputation = integer(), Accuracy_Complete = numeric(), Accuracy_Reduced = numeric(), stringsAsFactors = FALSE)
+
+for(i in 1:num_imputations){
+  # QDA on complete data
+  # Extract imputed data
+  train_data <- imp_train$imputations[[i]]
+  test_data <- imp_test$imputations[[i]]
+  
+  # Create QDA model
+  qda_model <- qda(V21 ~ ., data = train_data)
+  
+  # Make predictions
+  predictions <- predict(qda_model, newdata = test_data)$class
+  
+  # Calculate accuracy
+  accuracy <- sum(predictions == test_data$V21) / nrow(test_data)
+  
+  # QDA on PCA-reduced data
+  # Extract PCA data
+  train_data_pca <- train_pca_list[[i]]
+  test_data_pca <- test_pca_list[[i]]
+  
+  # Create QDA model
+  qda_model_pca <- qda(V21 ~ ., data = train_data_pca)
+  
+  # Make predictions
+  predictions_pca <- predict(qda_model_pca, newdata = test_data_pca)$class
+  
+  # Calculate accuracy
+  accuracy_pca <- sum(predictions_pca == test_data_pca$V21) / nrow(test_data_pca)
+  
+  # Append imputation number and accuracy to the results dataframe
+  qda_results_df <- rbind(qda_results_df, data.frame(Imputation = i, 
+                                                     Accuracy_Complete = accuracy,
+                                                     Accuracy_Reduced = accuracy_pca,
+                                                     stringsAsFactors = FALSE))
+}
+
+# Compute and append average accuracy to the dataframe
+qda_avg_accuracy <- round(mean(qda_results_df$Accuracy_Complete), 2)
+qda_avg_accuracy_pca <- round(mean(qda_results_df$Accuracy_Reduced), 2)
+qda_results_df <- rbind(qda_results_df, data.frame(Imputation = "Average", 
+                                                   Accuracy_Complete = qda_avg_accuracy,
+                                                   Accuracy_Reduced = qda_avg_accuracy_pca,
+                                                   stringsAsFactors = FALSE))
+
+# Create a flextable with the results
+qda_results_table <- flextable(qda_results_df)
+qda_results_table <- set_caption(qda_results_table, caption = "QDA Accuracy for Each Imputation")
+
+# Print the table
+print(qda_results_table)
+
+
+```
+
+In the case of Quadratic Discriminant Analysis (QDA), it is evident that employing Principal Component Analysis (PCA) for dimension reduction significantly impacts the classification accuracy. The average accuracy deteriorates by 23%, dropping from 92% with the complete data set to 69% with the PCA-reduced data. Thus, we observe a substantial loss in performance due to dimension reduction in the QDA model.
+
+## Support Vector Machine
+
+SVM is a powerful classification method that works by finding a hyperplane (a boundary in high-dimensional space) that best separates the classes. It determines this boundary by maximizing the margin between the classes in the training data. The 'support vectors' are the data points that are closest to the boundary, and they are what influence its position and orientation.
+
+```{r SVM, echo=FALSE}
+# Define a grid of hyperparameters
+cost_values <- c(0.01, 0.1, 1, 10, 100)
+gamma_values <- c(0.01, 0.1, 1, 10, 100)
+tune_grid <- expand.grid(cost = cost_values, gamma = gamma_values)
+
+# Create a data frame to store the results
+results_df <- data.frame(Imputation = integer(), Cost = numeric(), Gamma = numeric(), Accuracy = numeric())
+
+for (i in 1:5){
+  # Get the i-th imputation
+  imp_train_i <- as.data.frame(imp_train$imputations[[i]])
+  imp_test_i <- as.data.frame(imp_test$imputations[[i]])
+
+  # Make sure the target variable is a factor
+  imp_train_i$V21 <- as.factor(imp_train_i$V21)
+  imp_test_i$V21 <- as.factor(imp_test_i$V21)
+  
+  # Perform grid search
+  tuned_svm <- tune(svm, V21 ~ ., data = imp_train_i, 
+                    ranges = list(cost = cost_values, gamma = gamma_values),
+                    tunecontrol = tune.control(sampling = "cross", cross = 10))
+
+  # Extract best model
+  best_svm_model <- tuned_svm$best.model
+  
+  # Predict on the test set
+  preds <- predict(best_svm_model, newdata = imp_test_i)
+  
+  # Compute accuracy
+  acc <- sum(preds == imp_test_i$V21) / nrow(imp_test_i)
+
+  # Add the results to the data frame
+  results_df <- rbind(results_df, data.frame(Imputation = i, Cost = best_svm_model$cost, Gamma = best_svm_model$gamma, Accuracy = acc))
+}
+
+# Compute average accuracy
+avg_accuracy <- round(mean(results_df$Accuracy), 2)
+
+# Add average accuracy to the data frame
+results_df <- rbind(results_df, data.frame(Imputation = "Average", Cost = NA, Gamma = NA, Accuracy = avg_accuracy))
+
+# Display the results with flextable
+results_table <- flextable(results_df)
+results_table <- set_caption(results_table, caption = "SVM Results")
+print(results_table)
+
+```
+
+```{r svm_pca, echo=FALSE}
+# Create a data frame to store the results
+results_pca_df <- data.frame(Imputation = integer(), Cost = numeric(), Gamma = numeric(), Accuracy = numeric())
+
+for (i in 1:5){
+  # Get the i-th PCA reduced data
+  imp_train_pca_i <- train_pca_list[[i]]
+  imp_test_pca_i <- test_pca_list[[i]]
+
+  # Make sure the target variable is a factor
+  imp_train_pca_i$V21 <- as.factor(imp_train_pca_i$V21)
+  imp_test_pca_i$V21 <- as.factor(imp_test_pca_i$V21)
+  
+  # Perform grid search
+  tuned_svm <- tune(svm, V21 ~ ., data = imp_train_pca_i, 
+                    ranges = list(cost = cost_values, gamma = gamma_values),
+                    tunecontrol = tune.control(sampling = "cross", cross = 10))
+
+  # Extract best model
+  best_svm_model <- tuned_svm$best.model
+  
+  # Predict on the test set
+  preds <- predict(best_svm_model, newdata = imp_test_pca_i)
+  
+  # Compute accuracy
+  acc <- sum(preds == imp_test_pca_i$V21) / nrow(imp_test_pca_i)
+
+  # Add the results to the data frame
+  results_pca_df <- rbind(results_pca_df, data.frame(Imputation = i, Cost = best_svm_model$cost, Gamma = best_svm_model$gamma, Accuracy = acc))
+}
+
+# Compute average accuracy
+avg_accuracy_pca <- round(mean(results_pca_df$Accuracy), 2)
+
+# Add average accuracy to the data frame
+results_pca_df <- rbind(results_pca_df, data.frame(Imputation = "Average", Cost = NA, Gamma = NA, Accuracy = avg_accuracy_pca))
+
+# Display the results with flextable
+results_pca_table <- flextable(results_pca_df)
+results_pca_table <- set_caption(results_pca_table, caption = "SVM Results (PCA-reduced data)")
+print(results_pca_table)
+
+```
+
+# Conclusion
+
+Based on the results of our analysis, I strongly recommend utilizing the Quadratic Discriminant Analysis (QDA) model without applying any dimension reduction. This approach has shown to yield impressive classification accuracy.
+
+
+```{r final, echo=FALSE}
+
+# Create an empty data frame to store the results
+qda_valid_results_df <- data.frame(Imputation = integer(), Accuracy = numeric(), stringsAsFactors = FALSE)
+
+for(i in 1:5){
+  # Extract imputed data
+  train_data <- imp_train$imputations[[i]]
+  valid_data <- imp_valid$imputations[[i]]  # using the validation data
+  
+  # Create QDA model
+  qda_model <- qda(V21 ~ ., data = train_data)
+  
+  # Make predictions
+  predictions <- predict(qda_model, newdata = valid_data)$class
+  
+  # Calculate accuracy
+  accuracy <- sum(predictions == valid_data$V21) / nrow(valid_data)
+  
+  # Append imputation number and accuracy to the results dataframe
+  qda_valid_results_df <- rbind(qda_valid_results_df, data.frame(Imputation = i, 
+                                                                 Accuracy = accuracy,
+                                                                 stringsAsFactors = FALSE))
+}
+
+# Compute and append average accuracy to the dataframe
+qda_valid_avg_accuracy <- round(mean(qda_valid_results_df$Accuracy), 2)
+qda_valid_results_df <- rbind(qda_valid_results_df, data.frame(Imputation = "Average", 
+                                                               Accuracy = qda_valid_avg_accuracy,
+                                                               stringsAsFactors = FALSE))
+
+# Create a flextable with the results
+qda_valid_results_table <- flextable(qda_valid_results_df)
+qda_valid_results_table <- set_caption(qda_valid_results_table, caption = "QDA Accuracy for Each Imputation on Unseen Validation Data")
+
+# Print the table
+print(qda_valid_results_table)
+
+
+```
+
+
+```{r externalvalidation, echo=FALSE}
+# Read the CSV file
+exval <- read.csv("externalvalidation.csv")
+
+# Ensure the target variable is a factor
+exval$V21 <- as.factor(exval$V21)
+
+# Predict with QDA
+qda_preds <- predict(qda_model, newdata = exval)$class
+qda_accuracy <- sum(qda_preds == exval$V21) / nrow(exval)
+
+# Create a data frame to store the QDA accuracy
+qda_valid_results_df <- data.frame(Model = "QDA", Accuracy = qda_accuracy)
+
+# Create a flextable with the QDA accuracy
+qda_valid_results_table <- flextable(qda_valid_results_df)
+qda_valid_results_table <- set_caption(qda_valid_results_table, caption = "QDA Accuracy on Unseen External Data")
+
+# Print the table
+print(qda_valid_results_table)
+
+```
+
+
+::: {style="page-break-after: always;"}
+:::
+
+# Appenices
+
+::: {style="page-break-after: always;"}
+:::
+
+## Summery by class
+
+```{r, echo=FALSE}
+dataSum <- describeBy(data[,-21],group=data[,21],skew=FALSE,mat=TRUE) %>%
+  mutate_at(vars(mean, sd, min, max, range), round, 3) %>%
+  mutate_at(vars(se), round, 4)
+Ignore<-colnames(dataSum)%in% c("item","vars")
+dataSumx<-dataSum[,!Ignore]
+colnames(dataSumx)[colnames(dataSumx)=="group1"]<-"Class"
+#flextable(dataSumx)
+
+varNames<-gsub("\\.","\ ",colnames(data)[-21])
+dataSum<-cbind(variable=rep(varNames,each=5),dataSumx)
+#flextable(dataSum)
+des_by_class <- merge_v(flextable(dataSum)) |>  theme_booktabs(bold_header = TRUE) |> set_caption(caption = "Features' Summary Stats") |> set_header_labels(variable = "Feature", n = "Non-Missing",
+                    mean = "Mean", 
+                    sd = "Std Dev", 
+                    min = "Min.",
+                    max = "Max.",
+                    range = "Range",
+                    se = "Std Error"
+                    )
+#ft <- set_formatter(ft, fmt_double = "%.00f")
+#ft <- autofit(ft)
+des_by_class
+#    set_formatter_type(fmt_double = "%.3f") 
+#print(ft)
+```
+
+
+
+## Summary of missing values per Class
+
+```{r Missings, echo=FALSE ,fig.height = 13, fig.width = 9}
+
+
+# Convert the data to long format
+data_long <- data %>%
+  gather(key = "variable", value = "value", -V21)
+
+# Plot
+ggplot(data_long, aes(x = value, y = V21)) +
+  geom_miss_point() +
+  labs(x = "Value", y = "Class") +
+  theme_minimal() +
+  theme(legend.position = "bottom") +
+  guides(color = guide_legend(title = NULL)) +
+  facet_wrap(~variable, scales = "free", ncol = 3)
+
+```
+
+
+
+## Violin Plots
+```{r, echo=FALSE}
+means <- colMeans(data[, 1:20], na.rm = TRUE)
+
+# Sort the means
+sorted_means <- sort(means)
+
+# Print sorted means
+
+```
+
+```{r Vioplot1, echo=FALSE}
+# Stack the first three columns into a single column for plotting
+data_plot <- data[,c('V5', 'V11', 'V15', 'V14', 'V12', 'V13', 'V18', 'V17')]
+data_long <- reshape2::melt(data_plot, id.vars = NULL)
+
+# Create the violin plot
+ggplot(data_long, aes(x = variable, y = value)) +
+  geom_violin(fill = "skyblue") +
+  geom_boxplot(width=0.1, fill="white") +
+  coord_flip() +
+  theme_light() +
+  theme_light() +
+  labs(x = "Variable", y = "Value") +
+  ggtitle("Violin plot of first three columns")
+```
+
+```{r Vioplot2, echo=FALSE}
+# Stack the first three columns into a single column for plotting
+data_plot <- data[,c('V2', 'V7', 'V19', 'V6', 'V4', 'V10', 'V8', 'V20')]
+data_long <- reshape2::melt(data_plot, id.vars = NULL)
+
+# Create the violin plot
+ggplot(data_long, aes(x = variable, y = value)) +
+  geom_violin(fill = "skyblue") +
+  geom_boxplot(width=0.1, fill="white") +
+  coord_flip() +
+  theme_light() +
+  theme_light() +
+  labs(x = "Variable", y = "Value") +
+  ggtitle(" ")
+```
+
+
+```{r Vioplot3, echo=FALSE}
+# Stack the first three columns into a single column for plotting
+data_plot <- data[,c('V9', 'V16', 'V3', 'V1')]
+data_long <- reshape2::melt(data_plot, id.vars = NULL)
+
+# Create the violin plot
+ggplot(data_long, aes(x = variable, y = value)) +
+  geom_violin(fill = "skyblue") +
+  geom_boxplot(width=0.1, fill="white") +
+  coord_flip() +
+  theme_light() +
+  theme_light() +
+  labs(x = "Variable", y = "Value") +
+  ggtitle(" ")
+```
+
